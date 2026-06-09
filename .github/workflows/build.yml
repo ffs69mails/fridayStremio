@@ -140,7 +140,10 @@ jobs:
 
                 links.forEach(link => {
                   const info = parseFileInfo(link);
-                  existingStreams.push({ title: ('Vault DDL' + info.resTag + info.codecTag).trim(), url: link });
+                  // DEDUPLICATION FIX: Only add the link if it doesn't already exist
+                  if (!existingStreams.some(s => s.url === link)) {
+                    existingStreams.push({ title: ('Vault DDL' + info.resTag + info.codecTag).trim(), url: link });
+                  }
                 });
                 
                 fs.writeFileSync(targetPath, JSON.stringify({ streams: existingStreams }, null, 2));
@@ -161,7 +164,12 @@ jobs:
                     try { existingStreams = JSON.parse(fs.readFileSync(targetPath, 'utf8')).streams || []; } catch(e){}
                   }
                   
-                  const combinedStreams = [...existingStreams, ...newStreams];
+                  // DEDUPLICATION FIX: Filter out new streams that share a URL with existing ones
+                  const uniqueNewStreams = newStreams.filter(newStream => 
+                    !existingStreams.some(existingStream => existingStream.url === newStream.url)
+                  );
+                  
+                  const combinedStreams = [...existingStreams, ...uniqueNewStreams];
                   fs.writeFileSync(targetPath, JSON.stringify({ streams: combinedStreams }, null, 2));
                 }
               }
