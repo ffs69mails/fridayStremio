@@ -1,0 +1,189 @@
+name: Telegram Polling Vault Addon
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  poll-telegram:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Check Telegram and Process Streams
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          ALLOWED_CHAT: ${{ secrets.TELEGRAM_ALLOWED_CHAT_ID }}
+        run: |
+          node -e "
+          const fs = require('fs');
+          const path = require('path');
+
+          async function run() {
+            const token = process.env.TG_TOKEN;
+            const allowedChatString = process.env.ALLOWED_CHAT;
+            
+            if (!token || !allowedChatString) {
+              console.error('❌ Missing GitHub Secrets!');
+              process.exit(1);
+            }
+
+            // --- THE MULTI-USER PATCH ---
+            // Convert the comma-separated string into an array of clean strings
+            const allowedChats = allowedChatString.split(',').map(id => id.trim());
+
+            let lastUpdateId = 0;
+            const stateFile = '.github/tg_state.txt';
+            if (fs.existsSync(stateFile)) {
+              lastUpdateId = parseInt(fs.readFileSync(stateFile, 'utf8').trim(), 10) || 0;
+            }
+
+            console.log('Checking Telegram for new messages...');
+            const tgRes = await fetch('https://api.telegram.org/bot' + token + '/getUpdates?offset=' + (lastUpdateId + 1));
+            const tgData = await tgRes.json();
+
+            if (!tgData.ok || !tgData.result.length) {
+              console.log('No new messages found.');
+              return;
+            }
+
+            let highestUpdateId = lastUpdateId;
+
+            for (const update of tgData.result) {
+              highestUpdateId = Math.max(highestUpdateId, update.update_id);
+              
+              const msg = update.message;
+              if (!msg || !msg.text) continue;
+              
+              // --- THE NEW BOUNCER LOGIC ---
+              if (!allowedChats.includes(String(msg.from.id))) {
+                 console.log('🚫 Blocked unauthorized user ID:', msg.from.id);
+                 continue;
+              }
+
+              const text = msg.text.trim();
+              if (!text.startsWith('/vault')) continue;
+
+              const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+              
+              const header = lines[0].replace('/vault', '').trim();
+              const firstSpace = header.indexOf(' ');
+              
+              let type = 'movie'; 
+              let title = header;
+
+              if (firstSpace !== -1) {
+                const declaredType = header.substring(0, firstSpace).toLowerCase();
+                if (declaredType === 'movie' || declaredType === 'series') {
+                  type = declaredType;
+                  title = header.substring(firstSpace + 1).trim();
+                }
+              }
+
+              const links = lines.slice(1);
+              if (!links.length) continue;
+
+              let season = '1';
+              if (type === 'series') {
+                for (const link of links) {
+                  const decoded = decodeURIComponent(link);
+                  const seasonMatch = decoded.match(/s(\d+)/i) || decoded.match(/season\s*(\d+)/i);
+                  if (seasonMatch) {
+                    season = parseInt(seasonMatch[1], 10).toString();
+                    break;
+                  }
+                }
+              }
+
+              console.log('⚡ Explicit Command -> Type:', type, '| Title:', title, '| Season:', season);
+
+              const cinemetaRes = await fetch('https://v3-cinemeta.strem.io/catalog/' + type + '/top/search=' + encodeURIComponent(title) + '.json');
+              const cinemetaData = await cinemetaRes.json();
+              const id = cinemetaData?.metas?.[0]?.imdb_id || cinemetaData?.metas?.[0]?.id;
+
+              if (!id || id === 'null') {
+                console.error('❌ Could not find ID for ' + title);
+                continue;
+              }
+
+              fs.mkdirSync(path.join('stream', type), { recursive: true });
+
+              function parseFileInfo(url) {
+                const filename = decodeURIComponent(url.split('?')[0].split('/').pop());
+                let resTag = '';
+                if (/2160p|4k/i.test(filename)) resTag = ' 4K';
+                else if (/1080p/i.test(filename)) resTag = ' 1080p';
+                else if (/720p/i.test(filename)) resTag = ' 720p';
+
+                let codecTag = '';
+                if (/x265|h265|hevc/i.test(filename)) codecTag = ' HEVC';
+
+                let episode = null;
+                const sxeMatch = filename.match(/s\d+e(\d+)/i) || filename.match(/e(\d+)/i) || filename.match(/ep\s*(\d+)/i);
+                if (sxeMatch) {
+                  episode = parseInt(sxeMatch[1], 10);
+                } else {
+                  const numMatch = filename.match(/\b(\d{1,4})\b/);
+                  if (numMatch) episode = parseInt(numMatch[1], 10);
+                }
+                return { resTag, codecTag, episode };
+              }
+
+              if (type === 'movie') {
+                const targetPath = path.join('stream', 'movie', id + '.json');
+                let existingStreams = [];
+                if (fs.existsSync(targetPath)) {
+                  try { existingStreams = JSON.parse(fs.readFileSync(targetPath, 'utf8')).streams || []; } catch(e){}
+                }
+
+                links.forEach(link => {
+                  const info = parseFileInfo(link);
+                  existingStreams.push({ title: ('Vault DDL' + info.resTag + info.codecTag).trim(), url: link });
+                });
+                
+                fs.writeFileSync(targetPath, JSON.stringify({ streams: existingStreams }, null, 2));
+              } 
+              else {
+                const epGroups = {};
+                links.forEach((link, idx) => {
+                  const info = parseFileInfo(link);
+                  const ep = info.episode || (idx + 1);
+                  if (!epGroups[ep]) epGroups[ep] = [];
+                  epGroups[ep].push({ title: ('Vault DDL (Ep ' + ep + ')' + info.resTag + info.codecTag).trim(), url: link });
+                });
+
+                for (const [ep, newStreams] of Object.entries(epGroups)) {
+                  const targetPath = path.join('stream', 'series', id + ':' + season + ':' + ep + '.json');
+                  let existingStreams = [];
+                  if (fs.existsSync(targetPath)) {
+                    try { existingStreams = JSON.parse(fs.readFileSync(targetPath, 'utf8')).streams || []; } catch(e){}
+                  }
+                  
+                  const combinedStreams = [...existingStreams, ...newStreams];
+                  fs.writeFileSync(targetPath, JSON.stringify({ streams: combinedStreams }, null, 2));
+                }
+              }
+              console.log('✅ Successfully processed: ' + title);
+            }
+
+            fs.mkdirSync('.github', { recursive: true });
+            fs.writeFileSync(stateFile, String(highestUpdateId));
+          }
+
+          run().catch(err => {
+            console.error(err);
+            process.exit(1);
+          });
+          "
+
+      - name: Save Updates and Clear Queue State
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add stream/ .github/tg_state.txt
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Automated Sync: Processing Multi-User Drops" && git push)
