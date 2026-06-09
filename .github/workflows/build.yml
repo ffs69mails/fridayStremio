@@ -33,8 +33,6 @@ jobs:
               process.exit(1);
             }
 
-            // --- THE MULTI-USER PATCH ---
-            // Convert the comma-separated string into an array of clean strings
             const allowedChats = allowedChatString.split(',').map(id => id.trim());
 
             let lastUpdateId = 0;
@@ -60,7 +58,6 @@ jobs:
               const msg = update.message;
               if (!msg || !msg.text) continue;
               
-              // --- THE NEW BOUNCER LOGIC ---
               if (!allowedChats.includes(String(msg.from.id))) {
                  console.log('🚫 Blocked unauthorized user ID:', msg.from.id);
                  continue;
@@ -181,9 +178,9 @@ jobs:
           });
           "
 
-          - name: Save Updates and Clear Queue State
-                  run: |
-                    git config user.name "github-actions[bot]"
-                    git config user.email "github-actions[bot]@users.noreply.github.com"
-                    git add .
-                    git diff --quiet && git diff --staged --quiet || (git commit -m "Automated Sync: Processing Explicit Drops" && git push)
+      - name: Save Updates and Clear Queue State
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Automated Sync: Processing Explicit Drops" && git push)
