@@ -112,6 +112,7 @@ jobs:
 
               function parseFileInfo(url) {
                 const filename = decodeURIComponent(url.split('?')[0].split('/').pop());
+                
                 let resTag = '';
                 if (/2160p|4k/i.test(filename)) resTag = ' 4K';
                 else if (/1080p/i.test(filename)) resTag = ' 1080p';
@@ -119,6 +120,15 @@ jobs:
 
                 let codecTag = '';
                 if (/x265|h265|hevc/i.test(filename)) codecTag = ' HEVC';
+
+                // --- NEW ADVANCED TAGGING ENGINE ---
+                let extraTags = [];
+                if (/\b(bw|black.?and.?white|monochrome)\b/i.test(filename)) extraTags.push('B&W');
+                if (/\b(hdr|hdr10|hdr10\+)\b/i.test(filename)) extraTags.push('HDR');
+                if (/\b(dv|dolby.?vision)\b/i.test(filename)) extraTags.push('DV');
+                if (/\b(remux)\b/i.test(filename)) extraTags.push('REMUX');
+                
+                let tagString = extraTags.length ? ' [' + extraTags.join('|') + ']' : '';
 
                 let episode = null;
                 const sxeMatch = filename.match(/s\d+e(\d+)/i) || filename.match(/e(\d+)/i) || filename.match(/ep\s*(\d+)/i);
@@ -128,7 +138,8 @@ jobs:
                   const numMatch = filename.match(/\b(\d{1,4})\b/);
                   if (numMatch) episode = parseInt(numMatch[1], 10);
                 }
-                return { resTag, codecTag, episode };
+                
+                return { resTag, codecTag, tagString, filename, episode };
               }
 
               if (type === 'movie') {
@@ -140,9 +151,10 @@ jobs:
 
                 links.forEach(link => {
                   const info = parseFileInfo(link);
-                  // DEDUPLICATION FIX: Only add the link if it doesn't already exist
                   if (!existingStreams.some(s => s.url === link)) {
-                    existingStreams.push({ title: ('Vault DDL' + info.resTag + info.codecTag).trim(), url: link });
+                    // Injecting the raw filename onto a second line via \n
+                    const streamTitle = ('Vault DDL' + info.resTag + info.codecTag + info.tagString).trim() + '\n📄 ' + info.filename;
+                    existingStreams.push({ title: streamTitle, url: link });
                   }
                 });
                 
@@ -154,7 +166,10 @@ jobs:
                   const info = parseFileInfo(link);
                   const ep = info.episode || (idx + 1);
                   if (!epGroups[ep]) epGroups[ep] = [];
-                  epGroups[ep].push({ title: ('Vault DDL (Ep ' + ep + ')' + info.resTag + info.codecTag).trim(), url: link });
+                  
+                  // Injecting the raw filename onto a second line via \n
+                  const streamTitle = ('Vault DDL (Ep ' + ep + ')' + info.resTag + info.codecTag + info.tagString).trim() + '\n📄 ' + info.filename;
+                  epGroups[ep].push({ title: streamTitle, url: link });
                 });
 
                 for (const [ep, newStreams] of Object.entries(epGroups)) {
@@ -164,7 +179,6 @@ jobs:
                     try { existingStreams = JSON.parse(fs.readFileSync(targetPath, 'utf8')).streams || []; } catch(e){}
                   }
                   
-                  // DEDUPLICATION FIX: Filter out new streams that share a URL with existing ones
                   const uniqueNewStreams = newStreams.filter(newStream => 
                     !existingStreams.some(existingStream => existingStream.url === newStream.url)
                   );
@@ -191,4 +205,4 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add .
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Automated Sync: Processing Explicit Drops" && git push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Automated Sync: Filename Display + Smart Tags" && git push)
